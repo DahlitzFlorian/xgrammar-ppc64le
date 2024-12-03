@@ -1,0 +1,81 @@
+name: Build xgrammar wheel on Power
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release:
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: "linux/ppc64le"
+
+      - name: Install
+        id: install
+        run: >-
+          docker run --rm --platform "linux/ppc64le"
+          --mount "type=bind,src=$(pwd),dst=/build"
+          -w "/build" ppc64le/python:3.11 /bin/bash -ec '
+          export PATH="/usr/local/cargo/bin:$PATH:/opt/conda/bin/";
+          apt-get update -y && apt-get install -y git wget curl vim libnuma-dev libsndfile-dev libprotobuf-dev build-essential ffmpeg libsm6 libxext6 libgl1;
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-ppc64le/latest | tar -xvj bin/micromamba && mv bin/micromamba /usr/bin;
+          micromamba shell init -s bash -r ~/micromamba && source ~/.bashrc;
+          micromamba activate;
+          micromamba install -y -p ~/micromamba -c rocketce -c defaults python=3.11 && micromamba clean --all --yes;
+
+          ~/micromamba/bin/python -m pip install -v --prefer-binary --extra-index-url https://repo.fury.io/mgiessing \
+            "cmake>=3.26" ninja pybind11 torch==2.3.1;
+
+          git clone --recursive https://github.com/mlc-ai/xgrammar.git && cd xgrammar;
+          mkdir build && cd build;
+          cmake .. -G Ninja;
+          ninja;
+          
+          cd ../python && ~/micromamba/bin/python -m pip install .;
+          echo "$(find / -name "xgrammar*.whl")";
+          WHEEL_PATH=$(find / -name "xgrammar*.whl");
+          cp $WHEEL_PATH /build/;'          
+
+      - name: Create a tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "<>"
+          git tag ${{ inputs.release }}
+          git push origin ${{ inputs.release }} -f
+
+      - name: Capture the file
+        id: capture
+        run: |
+          WHEEL_PATH=$(find $PWD -name "xgrammar*.whl")
+          echo "Found $WHEEL_PATH"
+          echo "ARTIFACT=$WHEEL_PATH" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ inputs.release }}
+          tag_name: ${{ inputs.release }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: ${{ steps.capture.outputs.ARTIFACT }}
+          draft: false
+          prerelease: false
